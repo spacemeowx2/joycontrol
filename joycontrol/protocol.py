@@ -4,7 +4,7 @@ from asyncio import BaseTransport, BaseProtocol
 from typing import Optional, Union, Tuple, Text
 
 from joycontrol.controller import Controller
-from joycontrol.controller_state import ControllerState
+from joycontrol.controller_state import ControllerState, MCUState
 from joycontrol.memory import FlashMemory
 from joycontrol.report import OutputReport, SubCommand, InputReport, OutputReportID
 
@@ -33,8 +33,10 @@ class ControllerProtocol(BaseProtocol):
         self._data_received = asyncio.Event()
 
         self._controller_state = ControllerState(self, controller, spi_flash=spi_flash)
+        self._mcu_state = MCUState(self)
 
         self._0x30_input_report_sender = None
+        self._current_report_id = 0x30
 
         # This event gets triggered once the Switch assigns a player number to the controller and accepts user inputs
         self.sig_set_player_lights = asyncio.Event()
@@ -59,6 +61,9 @@ class ControllerProtocol(BaseProtocol):
         # set timer byte of input report
         input_report.set_timer(self._input_report_timer)
         self._input_report_timer = (self._input_report_timer + 1) % 0x100
+
+        if input_report.get_input_report_id() == 0x31:
+            input_report.set_mcu(self._mcu_state)
 
         await self.transport.write(input_report)
         self._controller_state.sig_is_send.set()
@@ -88,16 +93,16 @@ class ControllerProtocol(BaseProtocol):
         Continuously sends 0x30 input reports containing the controller state.
         """
         if self.transport.is_reading():
-            raise ValueError('Transport must be paused in 0x30 input report mode')
+            raise ValueError('Transport must be paused in 0x31 input report mode')
 
         input_report = InputReport()
-        input_report.set_input_report_id(0x30)
         input_report.set_vibrator_input()
         input_report.set_misc()
 
         reader = asyncio.ensure_future(self.transport.read())
 
         while True:
+            input_report.set_input_report_id(self._current_report_id)
             if self.controller == Controller.PRO_CONTROLLER:
                 # send state at 120Hz
                 await asyncio.sleep(1 / 120)
@@ -124,6 +129,8 @@ class ControllerProtocol(BaseProtocol):
                         pass
                     elif output_report_id == OutputReportID.SUB_COMMAND:
                         reply_send = await self._reply_to_sub_command(report)
+                    elif output_report_id == OutputReportID.REQUEST_MCU:
+                        reply_send = await self._reply_to_mcu(report)
                 except ValueError as v_err:
                     logger.warning(f'Report parsing error "{v_err}" - IGNORE')
                 except NotImplementedError as err:
@@ -163,6 +170,33 @@ class ControllerProtocol(BaseProtocol):
         #    pass
         else:
             logger.warning(f'Output report {output_report_id} not implemented - ignoring')
+
+    async def _reply_to_mcu(self, report):
+        sub_command = report.data[11]
+
+        # logging.info(f'received output report - Request MCU sub command {sub_command}')
+
+        # Request mcu state
+        if sub_command == 0x01:
+            input_report = InputReport()
+            input_report.set_input_report_id(0x21)
+            input_report.set_misc()
+
+            input_report.set_ack(0xA0)
+            input_report.reply_to_subcommand_id(0x21)
+
+            # TODO
+            data = self._mcu_state.mcu_state()
+            for i in range(len(data)):
+                input_report.data[16+i] = data[i]
+
+            await self.write(input_report)
+        # Send Start tag discovery
+        elif sub_command == 0x02:
+            
+        else:
+            logging.info(f'Unknown MCU sub command {sub_command}')
+
 
     async def _reply_to_sub_command(self, report):
         # classify sub command
@@ -274,32 +308,36 @@ class ControllerProtocol(BaseProtocol):
 
     async def _command_set_input_report_mode(self, sub_command_data):
         if sub_command_data[0] == 0x30:
-            logger.info('Setting input report mode to 0x30...')
-
-            input_report = InputReport()
-            input_report.set_input_report_id(0x21)
-            input_report.set_misc()
-
-            input_report.set_ack(0x80)
-            input_report.reply_to_subcommand_id(0x03)
-
-            await self.write(input_report)
-
-            # start sending 0x30 input reports
-            if self._0x30_input_report_sender is None:
-                self.transport.pause_reading()
-                self._0x30_input_report_sender = asyncio.ensure_future(self.input_report_mode_0x30())
-
-                # create callback to check for exceptions
-                def callback(future):
-                    try:
-                        future.result()
-                    except Exception as err:
-                        logger.exception(err)
-
-                self._0x30_input_report_sender.add_done_callback(callback)
+            self._current_report_id = 0x30
+        elif sub_command_data[0] == 0x31:
+            self._current_report_id = 0x31
         else:
             logger.error(f'input report mode {sub_command_data[0]} not implemented - ignoring request')
+            return
+        logger.info(f'Setting input report mode to 0x{sub_command_data[0]}...')
+
+        input_report = InputReport()
+        input_report.set_input_report_id(0x21)
+        input_report.set_misc()
+
+        input_report.set_ack(0x80)
+        input_report.reply_to_subcommand_id(0x03)
+
+        await self.write(input_report)
+
+        # start sending 0x30 input reports
+        if self._0x30_input_report_sender is None:
+            self.transport.pause_reading()
+            self._0x30_input_report_sender = asyncio.ensure_future(self.input_report_mode_0x30())
+
+            # create callback to check for exceptions
+            def callback(future):
+                try:
+                    future.result()
+                except Exception as err:
+                    logger.exception(err)
+
+            self._0x30_input_report_sender.add_done_callback(callback)
 
     async def _command_trigger_buttons_elapsed_time(self, sub_command_data):
         input_report = InputReport()
@@ -348,9 +386,16 @@ class ControllerProtocol(BaseProtocol):
         input_report.reply_to_subcommand_id(SubCommand.SET_NFC_IR_MCU_CONFIG.value)
 
         # TODO
-        data = [1, 0, 255, 0, 8, 0, 27, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200]
+        # data = [1, 0, 255, 0, 8, 0, 27, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200]
+        data = self._mcu_state.mcu_state()
         for i in range(len(data)):
             input_report.data[16+i] = data[i]
+        
+        # Set MCU mode cmd
+        if sub_command_data[1] == 0:
+            self._mcu_state.set_state(sub_command_data[2])
+        else:
+            logger.info(f"unknown mcu config command {sub_command_data}")
 
         await self.write(input_report)
 
@@ -363,10 +408,12 @@ class ControllerProtocol(BaseProtocol):
             # 0x01 = Resume
             input_report.set_ack(0x80)
             input_report.reply_to_subcommand_id(SubCommand.SET_NFC_IR_MCU_STATE.value)
+            self._mcu_state.set_state(1)
         elif sub_command_data[0] == 0x00:
             # 0x00 = Suspend
             input_report.set_ack(0x80)
             input_report.reply_to_subcommand_id(SubCommand.SET_NFC_IR_MCU_STATE.value)
+            self._mcu_state.set_state(0)
         else:
             raise NotImplementedError(f'Argument {sub_command_data[0]} of {SubCommand.SET_NFC_IR_MCU_STATE} '
                                       f'not implemented.')

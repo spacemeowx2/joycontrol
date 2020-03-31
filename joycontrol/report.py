@@ -10,8 +10,7 @@ class InputReport:
     """
     def __init__(self, data=None):
         if not data:
-            # TODO: not enough space for NFC/IR data input report
-            self.data = [0x00] * 51
+            self.data = [0x00] * 364
             # all input reports are prepended with 0xA1
             self.data[0] = 0xA1
         else:
@@ -112,6 +111,25 @@ class InputReport:
         # HACK: Set all 0 for now
         for i in range(14, 50):
             self.data[i] = 0x00
+    
+    def set_mcu_ready(self, ready):
+        data = [0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x05, 0x01] + [0] * 25 + [0x7b]
+        for i in range(len(data)):
+            self.data[50+i] = data[i]
+        self.data[49 + 1] = 0x01
+        self.data[50 + 1] = 0x00
+        self.data[51 + 1] = 0x00
+        self.data[52 + 1] = 0x00
+        self.data[53 + 1] = 0x03
+        self.data[54 + 1] = 0x00
+        self.data[55 + 1] = 0x05
+        self.data[56 + 1] = ready
+
+    def set_mcu(self, data):
+        # write to data
+        data = bytes(data)
+        for i in range(len(data)):
+            self.data[50 + i] = data[i]
 
     def reply_to_subcommand_id(self, _id):
         if isinstance(_id, SubCommand):
@@ -195,8 +213,10 @@ class InputReport:
             return bytes(self.data[:51])
         elif _id == 0x30:
             return bytes(self.data[:14])
+        elif _id == 0x31:
+            return bytes(self.data[:363])
         else:
-            return bytes(self.data)
+            return bytes(self.data[:51])
 
 
 class SubCommand(Enum):
@@ -215,6 +235,7 @@ class SubCommand(Enum):
 class OutputReportID(Enum):
     SUB_COMMAND = 0x01
     RUMBLE_ONLY = 0x10
+    REQUEST_MCU = 0x11
 
 
 class OutputReport:
