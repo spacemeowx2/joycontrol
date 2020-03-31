@@ -3,6 +3,7 @@ import asyncio
 from joycontrol import utils
 from joycontrol.controller import Controller
 from joycontrol.memory import FlashMemory
+from crc8 import crc8
 
 
 class ControllerState:
@@ -54,6 +55,34 @@ class ControllerState:
         """
         await self._protocol.sig_set_player_lights.wait()
 
+
+class MCUState:
+    def __init__(self, controller: Controller):
+        self.controller = controller
+
+        self._mcu_bytes = [0] * 313
+        self._mcu_mode = 1
+
+    def set_state(self, v):
+        self._mcu_mode = v
+
+    def mcu_state(self):
+        data = [0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x05, self._mcu_mode] + [0] * 25
+        for i in range(len(data)):
+            self._mcu_bytes[i] = data[i]
+
+        hash = crc8()
+        hash.update(bytes(self._mcu_bytes[:-1]))
+        self._mcu_bytes[-1] = ord(hash.digest())
+
+        hash1 = crc8()
+        hash1.update(bytes(data))
+        checksum = hash1.digest()
+        data += [ord(checksum)]
+        return data
+    
+    def __bytes__(self):
+        return bytes(self._mcu_bytes)
 
 class ButtonState:
     """
