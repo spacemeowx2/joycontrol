@@ -6,12 +6,11 @@ from contextlib import contextmanager
 
 from joycontrol import logging_default as log
 from joycontrol.command_line_interface import ControllerCLI
-from joycontrol.controller_state import ControllerState, button_push
+from joycontrol.controller_state import ControllerState, button_push, set_nfc
 from joycontrol.protocol import controller_protocol_factory, Controller
 from joycontrol.server import create_hid_server
 
 logger = logging.getLogger(__name__)
-
 
 async def test_controller_buttons(controller_state: ControllerState):
     """
@@ -19,36 +18,53 @@ async def test_controller_buttons(controller_state: ControllerState):
     """
     await controller_state.connect()
 
-    # We assume we are in the "Change Grip/Order" menu of the switch
-    await button_push(controller_state, 'home')
+    if False:
+        # We assume we are in the "Change Grip/Order" menu of the switch
+        await button_push(controller_state, 'home')
 
-    # wait for the animation
-    await asyncio.sleep(1)
+        # wait for the animation
+        await asyncio.sleep(1)
 
-    # Goto settings
-    await button_push(controller_state, 'down')
-    await asyncio.sleep(0.3)
-    for _ in range(4):
+        # Goto settings
+        await button_push(controller_state, 'down')
+        await asyncio.sleep(0.3)
+        for _ in range(4):
+            await button_push(controller_state, 'right')
+            await asyncio.sleep(0.3)
+        await button_push(controller_state, 'a')
+        await asyncio.sleep(0.3)
+
+        # goto "amiibo" menu
+        for _ in range(9):
+            await button_push(controller_state, 'down')
+            await asyncio.sleep(0.3)
         await button_push(controller_state, 'right')
         await asyncio.sleep(0.3)
-    await button_push(controller_state, 'a')
-    await asyncio.sleep(0.3)
 
-    # goto "amiibo" menu
-    for _ in range(9):
-        await button_push(controller_state, 'down')
+        # go to initial amiibo
+        for _ in range(2):
+            await button_push(controller_state, 'down')
+            await asyncio.sleep(0.3)
+        await button_push(controller_state, 'a')
         await asyncio.sleep(0.3)
-    await button_push(controller_state, 'right')
-    await asyncio.sleep(0.3)
 
-    # go to initial amiibo
-    for _ in range(2):
-        await button_push(controller_state, 'down')
-        await asyncio.sleep(0.3)
-    await button_push(controller_state, 'a')
-    await asyncio.sleep(0.3)
+
+    async def amiibo(filename):
+        with open(filename) as amiibo_file:
+            content = amiibo_file.read()
+            await set_nfc(controller_state, content)
+
+    async def remove_amiibo():
+        await controller_state.set_nfc(None)
+
+    # TODO remove debug line
+    with open("Isabelle.bin", "rb") as amiibo_file:
+        content = amiibo_file.read()
+        await set_nfc(controller_state, content)
 
     cli = ControllerCLI(controller_state)
+    cli.add_command('amiibo', amiibo)
+    cli.add_command('remove_amiibo', remove_amiibo)
     await cli.run()
 
 

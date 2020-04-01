@@ -33,7 +33,7 @@ class ControllerProtocol(BaseProtocol):
         self._data_received = asyncio.Event()
 
         self._controller_state = ControllerState(self, controller, spi_flash=spi_flash)
-        self._mcu_state = MCUState(self)
+        self._mcu_state = self._controller_state._mcu_state
 
         self._0x30_input_report_sender = None
         self._current_report_id = 0x30
@@ -173,6 +173,7 @@ class ControllerProtocol(BaseProtocol):
 
     async def _reply_to_mcu(self, report):
         sub_command = report.data[11]
+        sub_command_data = report.data[12:]
 
         # logging.info(f'received output report - Request MCU sub command {sub_command}')
 
@@ -186,14 +187,26 @@ class ControllerProtocol(BaseProtocol):
             input_report.reply_to_subcommand_id(0x21)
 
             # TODO
-            data = self._mcu_state.mcu_state()
+            data = self._mcu_state.get_mcu_state()
             for i in range(len(data)):
                 input_report.data[16+i] = data[i]
 
             await self.write(input_report)
         # Send Start tag discovery
         elif sub_command == 0x02:
-            
+            # 0: Cancel all, 4: StartWaitingReceive
+            if sub_command_data[0] == 0x04:
+                self._mcu_state.start_waiting_receive()
+            # 1: Start polling
+            elif sub_command_data[0] == 0x01:
+                self._mcu_state.start_polling()
+            # 2: stop polling
+            elif sub_command_data[0] == 0x02:
+                self._mcu_state.stop_polling()
+            else:
+                logging.info(f'Unknown sub_command_data arg {sub_command_data}')
+
+            self._mcu_state.get_mcu_state()
         else:
             logging.info(f'Unknown MCU sub command {sub_command}')
 
@@ -387,7 +400,7 @@ class ControllerProtocol(BaseProtocol):
 
         # TODO
         # data = [1, 0, 255, 0, 8, 0, 27, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200]
-        data = self._mcu_state.mcu_state()
+        data = self._mcu_state.get_mcu_state()
         for i in range(len(data)):
             input_report.data[16+i] = data[i]
         

@@ -1,9 +1,12 @@
 import asyncio
+import logging
 
 from joycontrol import utils
 from joycontrol.controller import Controller
 from joycontrol.memory import FlashMemory
 from crc8 import crc8
+
+logger = logging.getLogger(__name__)
 
 
 class ControllerState:
@@ -42,6 +45,8 @@ class ControllerState:
 
         self.sig_is_send = asyncio.Event()
 
+        self._mcu_state = MCUState(self)
+
     def get_flash_memory(self):
         return self._spi_flash
 
@@ -62,12 +67,50 @@ class MCUState:
 
         self._mcu_bytes = [0] * 313
         self._mcu_mode = 1
+        self._mcu_report_type = 1
+        self._nfc_content = None
+        self._nfc_polling = 0
+        self._busy_count = 0
 
     def set_state(self, v):
         self._mcu_mode = v
 
-    def mcu_state(self):
-        data = [0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x05, self._mcu_mode] + [0] * 25
+    def start_waiting_receive(self):
+        self._mcu_report_type = 0x2a
+        self._nfc_polling = 0x0b
+        if self._busy_count == 0:
+            self._busy_count = 10
+
+    def start_polling(self):
+        self._nfc_polling = 1
+
+    def stop_polling(self):
+        self._nfc_polling = 0
+
+    def get_tag_data(self):
+        # 000000 0101 02 00 07 04d4b14254498 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f0
+        # total 304 bytes
+        data = [0,0,0,1,1] + [0] * 299
+        if self._nfc_content:
+            data[5] = 0x02 # ntag215
+            data[7] = 7    # tag
+            uid = self._nfc_content[0:7]
+            for i in range(len(uid)):
+                data[8+i] = uid[i]
+        return data
+
+    def get_mcu_state(self):
+        if self._mcu_report_type == 1:
+            data = [self._mcu_report_type, 0x00, 0x00, 0x00, 0x05, 0x00, 0x18, self._mcu_mode] + [0] * 25
+        elif self._mcu_report_type == 0x2a:
+            if self._nfc_content and self._nfc_polling == 1:
+                data = [self._mcu_report_type, 0x00, 0x05, 0x00, 0x00, 0x09, 0x31, 0x09] + self.get_tag_data()
+            else:
+                if self._nfc_polling == 0x0b and self._busy_count > 0:
+                    self._busy_count -= 1
+                if self._busy_count == 0:
+                    self._nfc_polling = 0
+                data = [self._mcu_report_type, 0x00, 0x05, 0x00, 0x00, 0x09, 0x31, self._nfc_polling] + self.get_tag_data()
         for i in range(len(data)):
             self._mcu_bytes[i] = data[i]
 
@@ -80,9 +123,13 @@ class MCUState:
         checksum = hash1.digest()
         data += [ord(checksum)]
         return data
-    
+
+    def set_nfc(self, nfc_content):
+        self._nfc_content = nfc_content
+
     def __bytes__(self):
         return bytes(self._mcu_bytes)
+
 
 class ButtonState:
     """
@@ -216,6 +263,12 @@ async def button_push(controller_state, *buttons, sec=0.1):
     for button in buttons:
         # release button
         button_state.set_button(button, pushed=False)
+
+    # send report
+    await controller_state.send()
+
+async def set_nfc(controller_state, nfc_content):
+    controller_state._mcu_state.set_nfc(nfc_content)
 
     # send report
     await controller_state.send()
