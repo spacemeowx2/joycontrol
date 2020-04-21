@@ -10,7 +10,8 @@ from joycontrol.controller_state import ControllerState
 from joycontrol.memory import FlashMemory
 from joycontrol.report import OutputReport, SubCommand, InputReport, OutputReportID
 from joycontrol.transport import NotConnectedError
-from joycontrol.mcu import McuMode, McuState, Action
+from joycontrol.mcu import Mcu, McuState, Action
+from crc8 import crc8
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,8 @@ class ControllerProtocol(BaseProtocol):
         self._input_report_timer = (self._input_report_timer + 1) % 0x100
 
         if input_report.get_input_report_id() == 0x31:
+            self._mcu.set_nfc(self._controller_state._nfc_content)
+            self._mcu.update_nfc_report()
             input_report.set_mcu(self._mcu)
 
         await self.transport.write(input_report)
@@ -166,6 +169,10 @@ class ControllerProtocol(BaseProtocol):
                             pass
                         elif output_report_id == OutputReportID.SUB_COMMAND:
                             reply_send = await self._reply_to_sub_command(report)
+                        elif output_report_id == OutputReportID.REQUEST_MCU:
+                            reply_send = await self._reply_to_mcu(report)
+                        else:
+                            logger.warning(f'Report unknown output report "{output_report_id}" - IGNORE')
                     except ValueError as v_err:
                         logger.warning(f'Report parsing error "{v_err}" - IGNORE')
                     except NotImplementedError as err:
@@ -220,19 +227,22 @@ class ControllerProtocol(BaseProtocol):
 
         # logging.info(f'received output report - Request MCU sub command {sub_command}')
 
+        if self._mcu.get_action() == Action.READ_TAG or self._mcu.get_action() == Action.READ_TAG_2 or self._mcu.get_action() == Action.READ_FINISHED:
+            return
+
         # Request mcu state
         if sub_command == 0x01:
-            input_report = InputReport()
-            input_report.set_input_report_id(0x21)
-            input_report.set_misc()
+            # input_report = InputReport()
+            # input_report.set_input_report_id(0x21)
+            # input_report.set_misc()
 
-            input_report.set_ack(0xA0)
-            input_report.reply_to_subcommand_id(0x21)
+            # input_report.set_ack(0xA0)
+            # input_report.reply_to_subcommand_id(0x21)
 
             self._mcu.set_action(Action.REQUEST_STATUS)
-            input_report.set_mcu(self._mcu)
+            # input_report.set_mcu(self._mcu)
 
-            await self.write(input_report)
+            # await self.write(input_report)
         # Send Start tag discovery
         elif sub_command == 0x02:
             # 0: Cancel all, 4: StartWaitingReceive
@@ -248,22 +258,8 @@ class ControllerProtocol(BaseProtocol):
                 self._mcu.set_action(Action.READ_TAG)
             else:
                 logging.info(f'Unknown sub_command_data arg {sub_command_data}')
-
-            self._mcu.get_mcu_state()
         else:
             logging.info(f'Unknown MCU sub command {sub_command}')
-
-
-    async def _reply_nfc_read(self, report):
-        input_report = InputReport()
-        input_report.set_input_report_id(0x31)
-        input_report.set_misc()
-
-        self._mcu_state.read()
-        self._mcu_state.get_mcu_state()
-
-
-        await self.write(input_report)
 
 
     async def _reply_to_sub_command(self, report):
@@ -457,15 +453,24 @@ class ControllerProtocol(BaseProtocol):
         input_report.set_ack(0xA0)
         input_report.reply_to_subcommand_id(SubCommand.SET_NFC_IR_MCU_CONFIG.value)
 
-        # TODO
-        # data = [1, 0, 255, 0, 8, 0, 27, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 200]
-        data = self._mcu_state.get_mcu_state()
+        self._mcu.update_status()
+        data = list(bytes(self._mcu)[0:34])
+        crc = crc8()
+        crc.update(bytes(data[:-1]))
+        checksum = crc.digest()
+        data[-1] = ord(checksum)
+    
         for i in range(len(data)):
             input_report.data[16+i] = data[i]
         
         # Set MCU mode cmd
         if sub_command_data[1] == 0:
-            self._mcu_state.set_state(sub_command_data[2])
+            if sub_command_data[2] == 0:
+                self._mcu.set_state(McuState.STAND_BY)
+            elif sub_command_data[2] == 4:
+                self._mcu.set_state(McuState.NFC)
+            else:
+                logger.info(f"unknown mcu state {sub_command_data[2]}")
         else:
             logger.info(f"unknown mcu config command {sub_command_data}")
 
@@ -480,12 +485,12 @@ class ControllerProtocol(BaseProtocol):
             # 0x01 = Resume
             input_report.set_ack(0x80)
             input_report.reply_to_subcommand_id(SubCommand.SET_NFC_IR_MCU_STATE.value)
-            self._mcu_state.set_state(1)
+            self._mcu.set_state(McuState.STAND_BY)
         elif sub_command_data[0] == 0x00:
             # 0x00 = Suspend
             input_report.set_ack(0x80)
             input_report.reply_to_subcommand_id(SubCommand.SET_NFC_IR_MCU_STATE.value)
-            self._mcu_state.set_state(0)
+            self._mcu.set_state(McuState.STAND_BY)
         else:
             raise NotImplementedError(f'Argument {sub_command_data[0]} of {SubCommand.SET_NFC_IR_MCU_STATE} '
                                       f'not implemented.')

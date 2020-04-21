@@ -1,20 +1,23 @@
+from enum import Enum
+from crc8 import crc8
+
 
 class Action(Enum):
-    NON
-    REQUEST_STATUS
-    START_TAG_POLLING
-    START_TAG_DISCOVERY
-    READ_TAG_2
-    READ_FINISHED
-    READ_TAG
+    NON = 0
+    REQUEST_STATUS = 1
+    START_TAG_POLLING = 2
+    START_TAG_DISCOVERY = 3
+    READ_TAG = 4
+    READ_TAG_2 = 5
+    READ_FINISHED = 6
 
 
 class McuState(Enum):
-    NOT_INITIALIZED
-    IRC
-    NFC
-    STAND_BY
-    BUSY
+    NOT_INITIALIZED = 0
+    IRC = 1
+    NFC = 2
+    STAND_BY = 3
+    BUSY = 4
 
 
 def copyarray(dest, offset, src):
@@ -35,11 +38,20 @@ class Mcu:
         self._nfc_polling = 0
         self._busy_count = 0
 
+    def get_fw_major(self):
+        return self._fw_major
+
+    def get_fw_minor(self):
+        return self._fw_minor
+
     def set_action(self, v):
         self._action = v
 
     def get_action(self):
         return self._action
+
+    def set_state(self, v):
+        self._state = v
 
     def get_state(self):
         return self._state
@@ -64,6 +76,8 @@ class Mcu:
             return 1
         elif self.get_state() == McuState.STAND_BY:
             return 1
+        else:
+            return 0
 
     def get_tag_data(self):
         # 000000 0101 02 00 07 04d4b14254498 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f0
@@ -77,16 +91,29 @@ class Mcu:
                 data[8+i] = uid[i]
         return data
 
+    def update_status(self):
+        self._bytes[0] = 1
+        self._bytes[1] = 0
+        self._bytes[2] = 0
+        self._bytes[3] = self._fw_major[0]
+        self._bytes[4] = self._fw_major[1]
+        self._bytes[5] = self._fw_minor[0]
+        self._bytes[6] = self._fw_minor[1]
+        self._bytes[7] = self._get_state_byte()
+
     def update_nfc_report(self):
+        self._bytes = [0] * 313
         if self.get_action() == Action.REQUEST_STATUS:
             self._bytes[0] = 1
+            self._bytes[1] = 0
+            self._bytes[2] = 0
             self._bytes[3] = self._fw_major[0]
             self._bytes[4] = self._fw_major[1]
             self._bytes[5] = self._fw_minor[0]
             self._bytes[6] = self._fw_minor[1]
             self._bytes[7] = self._get_state_byte()
         elif self.get_action() == Action.NON:
-            self._bytes[0] = -1
+            self._bytes[0] = 0xff
         elif self.get_action() == Action.START_TAG_DISCOVERY:
             self._bytes[0] = 0x2a
             self._bytes[1] = 0
@@ -108,6 +135,7 @@ class Mcu:
                 copyarray(self._bytes, 5 + len(data), self._nfc_content[0:3])
                 copyarray(self._bytes, 5 + len(data) + 3, self._nfc_content[4:8])
             else:
+                print('nfc content is none')
                 self._bytes[5] = 9
                 self._bytes[6] = 0x31
                 self._bytes[7] = 0
@@ -116,13 +144,13 @@ class Mcu:
             self._bytes[1] = 0
             self._bytes[2] = 7
             if self.get_action() == Action.READ_TAG:
-                data = bytes.fromhex('010001310200000001020007')
-                copyarray(self._bytes, 3, data)
-                copyarray(self._bytes, 3 + len(data), self._nfc_content[0:3])
-                copyarray(self._bytes, 3 + len(data) + 3, self._nfc_content[4:8])
-                data = bytes.fromhex('000000007DFDF0793651ABD7466E39C191BABEB856CEEDF1CE44CC75EAFB27094D087AE803003B3C7778860000')
-                copyarray(self._bytes, 3 + len(data) + 3 + 4, data)
-                copyarray(self._bytes, 3 + len(data) + 3 + 4 + len(data), self._nfc_content[0:245])
+                data1 = bytes.fromhex('010001310200000001020007')
+                copyarray(self._bytes, 3, data1)
+                copyarray(self._bytes, 3 + len(data1), self._nfc_content[0:3])
+                copyarray(self._bytes, 3 + len(data1) + 3, self._nfc_content[4:8])
+                data2 = bytes.fromhex('000000007DFDF0793651ABD7466E39C191BABEB856CEEDF1CE44CC75EAFB27094D087AE803003B3C7778860000')
+                copyarray(self._bytes, 3 + len(data1) + 3 + 4, data2)
+                copyarray(self._bytes, 3 + len(data1) + 3 + 4 + len(data2), self._nfc_content[0:245])
                 self.set_action(Action.READ_TAG_2)
             else:
                 data = bytes.fromhex('02000927')
