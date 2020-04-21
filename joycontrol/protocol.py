@@ -6,10 +6,11 @@ from typing import Optional, Union, Tuple, Text
 
 from joycontrol import utils
 from joycontrol.controller import Controller
-from joycontrol.controller_state import ControllerState, MCUState
+from joycontrol.controller_state import ControllerState
 from joycontrol.memory import FlashMemory
 from joycontrol.report import OutputReport, SubCommand, InputReport, OutputReportID
 from joycontrol.transport import NotConnectedError
+from joycontrol.mcu import McuMode, McuState, Action
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class ControllerProtocol(BaseProtocol):
         self._controller_state = ControllerState(self, controller, spi_flash=spi_flash)
         self._controller_state_sender = None
 
-        self._mcu_state = self._controller_state._mcu_state
+        self._mcu = Mcu()
 
         self._0x30_input_report_sender = None
         # None = Just answer to sub commands
@@ -93,7 +94,7 @@ class ControllerProtocol(BaseProtocol):
         self._input_report_timer = (self._input_report_timer + 1) % 0x100
 
         if input_report.get_input_report_id() == 0x31:
-            input_report.set_mcu(self._mcu_state)
+            input_report.set_mcu(self._mcu)
 
         await self.transport.write(input_report)
 
@@ -228,29 +229,27 @@ class ControllerProtocol(BaseProtocol):
             input_report.set_ack(0xA0)
             input_report.reply_to_subcommand_id(0x21)
 
-            # TODO
-            data = self._mcu_state.get_mcu_state()
-            for i in range(len(data)):
-                input_report.data[16+i] = data[i]
+            self._mcu.set_action(Action.REQUEST_STATUS)
+            input_report.set_mcu(self._mcu)
 
             await self.write(input_report)
         # Send Start tag discovery
         elif sub_command == 0x02:
             # 0: Cancel all, 4: StartWaitingReceive
             if sub_command_data[0] == 0x04:
-                self._mcu_state.start_waiting_receive()
+                self._mcu.set_action(Action.START_TAG_DISCOVERY)
             # 1: Start polling
             elif sub_command_data[0] == 0x01:
-                self._mcu_state.start_polling()
+                self._mcu.set_action(Action.START_TAG_POLLING)
             # 2: stop polling
             elif sub_command_data[0] == 0x02:
-                self._mcu_state.stop_polling()
+                self._mcu.set_action(Action.NON)
             elif sub_command_data[0] == 0x06:
-                await self._reply_nfc_read(report)
+                self._mcu.set_action(Action.READ_TAG)
             else:
                 logging.info(f'Unknown sub_command_data arg {sub_command_data}')
 
-            self._mcu_state.get_mcu_state()
+            self._mcu.get_mcu_state()
         else:
             logging.info(f'Unknown MCU sub command {sub_command}')
 
@@ -384,7 +383,7 @@ class ControllerProtocol(BaseProtocol):
             logger.error(f'input report mode {sub_command_data[0]} not implemented - ignoring request')
             return
 
-        logger.info(f'Setting input report mode to 0x{sub_command_data[0]}...')
+        logger.info(f'Setting input report mode to {hex(sub_command_data[0])}...')
 
         input_report = InputReport()
         input_report.set_input_report_id(0x21)

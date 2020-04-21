@@ -45,7 +45,7 @@ class ControllerState:
 
         self.sig_is_send = asyncio.Event()
 
-        self._mcu_state = MCUState(self)
+        self._nfc_content = None
 
     def get_controller(self):
         return self._controller
@@ -65,83 +65,6 @@ class ControllerState:
         Waits until the switch is paired with the controller and accepts button commands
         """
         await self._protocol.sig_set_player_lights.wait()
-
-
-class MCUState:
-    def __init__(self, controller: Controller):
-        self.controller = controller
-
-        self._mcu_bytes = [0] * 313
-        self._mcu_mode = 1
-        self._mcu_report_type = 1
-        self._nfc_content = None
-        self._nfc_polling = 0
-        self._busy_count = 0
-
-    def set_state(self, v):
-        self._mcu_mode = v
-
-    def start_waiting_receive(self):
-        self._mcu_report_type = 0x2a
-        self._nfc_polling = 0x0b
-        if self._busy_count == 0:
-            self._busy_count = 10
-
-    def start_polling(self):
-        self._nfc_polling = 1
-
-    def stop_polling(self):
-        self._nfc_polling = 0
-
-    def read(self):
-        self._mcu_report_type = 0x3a
-
-    def get_tag_data(self):
-        # 000000 0101 02 00 07 04d4b14254498 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f0
-        # total 304 bytes
-        data = [0,0,0,1,1] + [0] * 299
-        if self._nfc_content:
-            data[5] = 0x02 # ntag215
-            data[7] = 7    # tag
-            uid = self._nfc_content[0:7]
-            for i in range(len(uid)):
-                data[8+i] = uid[i]
-        return data
-
-    def get_mcu_state(self):
-        if self._mcu_report_type == 1:
-            data = [self._mcu_report_type, 0x00, 0x00, 0x00, 0x05, 0x00, 0x18, self._mcu_mode] + [0] * 25
-        elif self._mcu_report_type == 0x2a:
-            if self._nfc_content and self._nfc_polling == 1:
-                data = [self._mcu_report_type, 0x00, 0x05, 0x00, 0x00, 0x09, 0x31, 0x09] + self.get_tag_data()
-            else:
-                if self._nfc_polling == 0x0b and self._busy_count > 0:
-                    self._busy_count -= 1
-                if self._busy_count == 0:
-                    self._nfc_polling = 0
-                data = [self._mcu_report_type, 0x00, 0x05, 0x00, 0x00, 0x09, 0x31, self._nfc_polling] + self.get_tag_data()
-        elif self._mcu_report_type == 0x3a:
-            data = [self._mcu_report_type, 0, 0x07, 1, 0, 1, 0x31, 2, ]
-
-        for i in range(len(data)):
-            self._mcu_bytes[i] = data[i]
-
-        hash = crc8()
-        hash.update(bytes(self._mcu_bytes[:-1]))
-        self._mcu_bytes[-1] = ord(hash.digest())
-
-        hash1 = crc8()
-        hash1.update(bytes(data))
-        checksum = hash1.digest()
-        data += [ord(checksum)]
-        return data
-
-    def set_nfc(self, nfc_content):
-        self._nfc_content = nfc_content
-
-    def __bytes__(self):
-        return bytes(self._mcu_bytes)
-
 
 class ButtonState:
     """
@@ -279,11 +202,9 @@ async def button_push(controller_state, *buttons, sec=0.1):
     # send report
     await controller_state.send()
 
-async def set_nfc(controller_state, nfc_content):
-    controller_state._mcu_state.set_nfc(nfc_content)
 
-    # send report
-    await controller_state.send()
+async def set_nfc(controller_state, nfc_content):
+    controller_state._nfc_content = nfc_content
 
 
 class _StickCalibration:
