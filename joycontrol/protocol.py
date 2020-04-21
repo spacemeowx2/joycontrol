@@ -203,12 +203,26 @@ class ControllerProtocol(BaseProtocol):
             # 2: stop polling
             elif sub_command_data[0] == 0x02:
                 self._mcu_state.stop_polling()
+            elif sub_command_data[0] == 0x06:
+                await self._reply_nfc_read(report)
             else:
                 logging.info(f'Unknown sub_command_data arg {sub_command_data}')
 
             self._mcu_state.get_mcu_state()
         else:
             logging.info(f'Unknown MCU sub command {sub_command}')
+
+
+    async def _reply_nfc_read(self, report):
+        input_report = InputReport()
+        input_report.set_input_report_id(0x31)
+        input_report.set_misc()
+
+        self._mcu_state.read()
+        self._mcu_state.get_mcu_state()
+
+
+        await self.write(input_report)
 
 
     async def _reply_to_sub_command(self, report):
