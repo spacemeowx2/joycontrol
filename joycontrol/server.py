@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 async def _send_empty_input_reports(transport):
     report = InputReport()
-    while True:
+    for i in range(10):
         await transport.write(report)
         await asyncio.sleep(1)
 
@@ -75,6 +75,8 @@ async def create_hid_server(protocol_factory, ctl_psm=17, itr_psm=19, device_id=
         itr_sock.listen(1)
 
         hid.powered(True)
+        hid.pairable(True)
+
         # setting bluetooth adapter name and class to the device we wish to emulate
         await hid.set_name(protocol.controller.device_name())
         await hid.set_class()
@@ -100,6 +102,7 @@ async def create_hid_server(protocol_factory, ctl_psm=17, itr_psm=19, device_id=
 
         # stop advertising
         hid.discoverable(False)
+        hid.pairable(False)
 
     else:
         # Reconnection to reconnect_bt_addr
@@ -111,16 +114,18 @@ async def create_hid_server(protocol_factory, ctl_psm=17, itr_psm=19, device_id=
         client_itr.setblocking(False)
 
     # create transport for the established connection and activate the HID protocol
-    transport = L2CAP_Transport(asyncio.get_event_loop(), protocol, client_itr, 50, capture_file=capture_file)
+    transport = L2CAP_Transport(asyncio.get_event_loop(), protocol, client_itr, client_ctl, 50, capture_file=capture_file)
     protocol.connection_made(transport)
 
-    # send some empty input reports until the Switch decides to reply
+    # HACK: send some empty input reports until the Switch decides to reply
     future = asyncio.ensure_future(_send_empty_input_reports(transport))
     await protocol.wait_for_output_report()
+    """
     future.cancel()
     try:
         await future
     except asyncio.CancelledError:
         pass
+    """
 
     return protocol.transport, protocol
