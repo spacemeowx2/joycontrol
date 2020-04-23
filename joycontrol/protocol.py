@@ -485,6 +485,7 @@ class ControllerProtocol(BaseProtocol):
             # 0x01 = Resume
             input_report.set_ack(0x80)
             input_report.reply_to_subcommand_id(SubCommand.SET_NFC_IR_MCU_STATE.value)
+            self._mcu.set_action(Action.NON)
             self._mcu.set_state(McuState.STAND_BY)
         elif sub_command_data[0] == 0x00:
             # 0x00 = Suspend
